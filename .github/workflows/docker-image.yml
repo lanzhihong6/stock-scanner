@@ -1,38 +1,186 @@
-name: Docker Build and Push
+name: Docker Build and Deploy
 
 on:
-  push:
-    branches: [ main ]  # 只在 main 分支推送时触发
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: '是否部署'
+        type: boolean
+        default: false
+
+env:
+  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+  TIME: ${{ github.run_number }}-${{ github.run_attempt }}
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Generate version
+        id: version
+        run: |
+          echo "version=$(date +'%Y%m%d%H%M')" >> $GITHUB_OUTPUT
+
   build:
+    needs: prepare
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v2
+    - name: Checkout code
+      uses: actions/checkout@v4
     
     - name: Set up QEMU
-      uses: docker/setup-qemu-action@v2
-    
-    - name: Get current time
-      id: time
-      run: echo "TIME=$(date +'%Y%m%d%H%M')" >> $GITHUB_ENV
+      uses: docker/setup-qemu-action@v3
     
     - name: Login to Docker Hub
-      uses: docker/login-action@v1
+      uses: docker/login-action@v3
       with:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
     
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v1
+      uses: docker/setup-buildx-action@v3
+      with:
+        platforms: linux/amd64,linux/arm64
+    
+    - name: Docker meta
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ secrets.DOCKERHUB_USERNAME }}/stock-scanner
+        tags: |
+          type=raw,value=latest
+          type=raw,value=${{ needs.prepare.outputs.version }}
     
     - name: Build and push
-      uses: docker/build-push-action@v2
+      uses: docker/build-push-action@v5
       with:
         context: .
         platforms: linux/amd64,linux/arm64
         push: true
-        tags: |
-          ${{ secrets.DOCKERHUB_USERNAME }}/stock-scanner:latest
-          ${{ secrets.DOCKERHUB_USERNAME }}/stock-scanner:${{ env.TIME }}
+        tags: ${{ steps.meta.outputs.tags }}
+        cache-from: type=gha,scope=stock-scanner
+        cache-to: type=gha,scope=stock-scanner,mode=max
+
+  deploy:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    if: |
+      success() && inputs.deploy
+    
+    steps:
+    - name: Checkout code for prod compose file
+      uses: actions/checkout@v4
+      with:
+        sparse-checkout: |
+          docker-compose.prod.yml
+          nginx/nginx.conf
+    
+    - name: Create .env file for deployment
+      run: |
+        cat > .env << EOL
+        DOCKERHUB_USERNAME=${{ secrets.DOCKERHUB_USERNAME }}
+        TAG=${{ needs.prepare.outputs.version }}
+        API_KEY=${{ secrets.API_KEY }}
+        API_URL=${{ secrets.API_URL }}
+        API_MODEL=${{ secrets.API_MODEL }}
+        API_TIMEOUT=${{ secrets.API_TIMEOUT }}
+        LOGIN_PASSWORD=${{ secrets.LOGIN_PASSWORD }}
+        ANNOUNCEMENT_TEXT=${{ secrets.ANNOUNCEMENT_TEXT }}
+        EOL
+    
+    - name: Deploy to server
+      uses: appleboy/ssh-action@master
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USERNAME }}
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        script_stop: true # 遇到错误时停止执行
+        envs: DEPLOY_PATH
+        script: |
+          # 创建备份目录（如果不存在）
+          mkdir -p ${DEPLOY_PATH}/backups
+          
+          # 如果存在旧容器，备份当前的配置和数据
+          if [ -f ${DEPLOY_PATH}/docker-compose.prod.yml ]; then
+            cp ${DEPLOY_PATH}/docker-compose.prod.yml ${DEPLOY_PATH}/backups/docker-compose.prod.$(date +%Y%m%d%H%M%S).yml
+            if [ -f ${DEPLOY_PATH}/.env ]; then
+              cp ${DEPLOY_PATH}/.env ${DEPLOY_PATH}/backups/.env.$(date +%Y%m%d%H%M%S)
+            fi
+          fi
+          
+          # 创建nginx目录和日志目录（如果不存在）
+          mkdir -p ${DEPLOY_PATH}/nginx
+          mkdir -p ${DEPLOY_PATH}/nginx/logs
+          mkdir -p ${DEPLOY_PATH}/nginx/ssl
+          
+          # 如果SSL证书不存在，创建自签名证书（仅用于测试）
+          if [ ! -f ${DEPLOY_PATH}/nginx/ssl/fullchain.pem ] || [ ! -f ${DEPLOY_PATH}/nginx/ssl/privkey.pem ]; then
+            echo "SSL证书不存在，创建自签名证书..."
+            openssl req -x509 -nodes -days 365 \
+              -newkey rsa:2048 \
+              -keyout ${DEPLOY_PATH}/nginx/ssl/privkey.pem \
+              -out ${DEPLOY_PATH}/nginx/ssl/fullchain.pem \
+              -subj "/CN=localhost" \
+              -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+            echo "自签名证书创建完成"
+          fi
+    
+    - name: Copy files to server
+      uses: appleboy/scp-action@master
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USERNAME }}
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        source: "docker-compose.prod.yml,.env,nginx/nginx.conf"
+        target: ${{ secrets.DEPLOY_PATH }}
+        overwrite: true
+    
+    - name: Start services
+      uses: appleboy/ssh-action@master
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USERNAME }}
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        script_stop: true
+        script: |
+          cd ${{ secrets.DEPLOY_PATH }}
+          
+          # 拉取最新镜像并启动服务
+          docker compose -f docker-compose.prod.yml pull
+          docker compose -f docker-compose.prod.yml up -d
+          
+          # 等待服务启动完成
+          echo "等待服务启动..."
+          sleep 10
+          
+          # 验证服务是否正常运行
+          if ! curl -s -k https://localhost:443 > /dev/null && ! curl -s http://localhost:80 > /dev/null; then
+            echo "服务未正常运行！"
+            exit 1
+          fi
+          
+          # 清理未使用的镜像和容器
+          docker system prune -af --volumes
+          
+          echo "部署完成并验证成功！"
+  
+  notify:
+    needs: [prepare, build, deploy]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Notify deployment status
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_CHANNEL: deployments
+          SLACK_COLOR: ${{ needs.deploy.result == 'success' && 'good' || needs.deploy.result == 'skipped' && 'warning' || 'danger' }}
+          SLACK_TITLE: Stock Scanner Deployment Status
+          SLACK_MESSAGE: |
+            Build: ${{ needs.build.result == 'success' && '✅' || '❌' }}
+            Deploy: ${{ needs.deploy.result == 'success' && '✅' || needs.deploy.result == 'skipped' && '⏭️' || '❌' }}
+            Version: ${{ needs.prepare.outputs.version }}
+          SLACK_FOOTER: GitHub Actions
