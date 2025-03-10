@@ -1,12 +1,10 @@
-# 本地开发和手动构建场景
+# 用于GitHub Actions自动化部署流程
 
 version: '3.8'
 
 services:
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ${DOCKERHUB_USERNAME}/stock-scanner:${TAG}
     container_name: stock-scanner-app
     ports:
       - "8888:8888"
@@ -19,13 +17,27 @@ services:
       - ANNOUNCEMENT_TEXT=${ANNOUNCEMENT_TEXT}
     volumes:
       - ./logs:/app/logs
-    restart: unless-stopped
+      - ./data:/app/data
+    restart: always
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8888/api/config"]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
     networks:
       - stock-scanner-network
 
@@ -41,16 +53,29 @@ services:
       - ./nginx/ssl:/etc/nginx/ssl
     depends_on:
       - app
-    restart: unless-stopped
+    restart: always
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:80"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - stock-scanner-network
 
 networks:
   stock-scanner-network:
-    driver: bridge
+    driver: bridge 

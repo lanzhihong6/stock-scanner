@@ -1,0 +1,59 @@
+/* 全局样式覆盖 - 专门针对Naive UI组件 */
+
+/* 移除所有Naive UI按钮的焦点边框 */
+.n-button:focus,
+.n-button:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+/* 为主要按钮添加自定义焦点样式 */
+.n-button--primary:focus,
+.n-button--primary:focus-visible {
+  outline: none !important;
+  box-shadow: 0 0 0 2px rgba(32, 128, 240, 0.2) !important;
+}
+
+/* 输入框和下拉菜单的焦点样式 */
+.n-input:focus-within,
+.n-input-number:focus-within,
+.n-select:focus-within {
+  outline: none !important;
+  box-shadow: 0 0 0 2px rgba(32, 128, 240, 0.2) !important;
+}
+
+/* 标签的焦点样式 */
+.n-tag:focus {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+/* 移除所有元素的黑色边框 */
+*:focus {
+  outline: none !important;
+}
+
+/* 移除移动设备上的点击高亮 */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 修复Firefox特定的焦点样式 */
+button::-moz-focus-inner,
+input::-moz-focus-inner {
+  border: 0;
+}
+
+/* 确保所有按钮在点击后不显示边框 */
+button:focus {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+/* 确保所有输入框在点击后显示自定义边框 */
+input:focus,
+textarea:focus,
+select:focus {
+  outline: none !important;
+  box-shadow: 0 0 0 2px rgba(32, 128, 240, 0.2) !important;
+} 

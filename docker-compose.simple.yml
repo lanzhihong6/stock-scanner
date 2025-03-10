@@ -1,12 +1,10 @@
-# 本地开发和手动构建场景
+# 用于直接从DockerHub拉取镜像部署
 
 version: '3.8'
 
 services:
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: cassianvale/stock-scanner:latest
     container_name: stock-scanner-app
     ports:
       - "8888:8888"
@@ -19,13 +17,8 @@ services:
       - ANNOUNCEMENT_TEXT=${ANNOUNCEMENT_TEXT}
     volumes:
       - ./logs:/app/logs
+      - ./data:/app/data
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8888/api/config"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 5s
     networks:
       - stock-scanner-network
 
@@ -42,15 +35,9 @@ services:
     depends_on:
       - app
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:80"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 5s
     networks:
       - stock-scanner-network
 
 networks:
   stock-scanner-network:
-    driver: bridge
+    driver: bridge 
